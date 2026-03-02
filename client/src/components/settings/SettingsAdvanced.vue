@@ -6,61 +6,6 @@
     </div>
 
     <div class="settings-grid">
-      <!-- User Selection -->
-      <div class="settings-group">
-        <h3>
-          <i class="fas fa-users"></i>
-          User Selection
-        </h3>
-
-        <div class="form-group">
-          <label for="selectedUsers">Selected Users</label>
-          <div v-if="isLoadingUsers" class="loading-users">
-            <i class="fas fa-spinner fa-spin"></i>
-            Loading users...
-          </div>
-          <div v-else class="user-grid">
-            <div
-              v-for="user in availableUsers"
-              :key="user.id"
-              :class="['user-card', { 'selected': isUserSelected(user.id) }]"
-              @click="toggleUserSelection(user.id)"
-            >
-              <div class="user-avatar">
-                <img v-if="user.avatar" :src="user.avatar" :alt="user.name" />
-                <i v-else class="fas fa-user"></i>
-              </div>
-              <div class="user-info">
-                <div class="user-name">{{ user.name }}</div>
-                <div class="user-type">{{ user.type || 'User' }}</div>
-              </div>
-              <div class="user-selection-indicator">
-                <i class="fas fa-check"></i>
-              </div>
-            </div>
-            <div v-if="availableUsers.length === 0" class="no-users">
-              <i class="fas fa-users-slash"></i>
-              <p>No users available</p>
-              <small>Please configure your media service first</small>
-            </div>
-          </div>
-          <small class="form-help">
-            Click on users to select/deselect them for suggestion generation. Leave empty to include all users.
-          </small>
-        </div>
-
-        <div class="form-group">
-          <button
-            @click="refreshUsers"
-            class="btn btn-outline btn-sm"
-            :disabled="isLoading || isLoadingUsers"
-          >
-            <i class="fas fa-sync"></i>
-            Refresh Users
-          </button>
-        </div>
-      </div>
-
       <!-- Experimental Features -->
       <div class="settings-group experimental">
         <h3>
@@ -93,10 +38,6 @@
         </div>
       
         <div class="form-group feature-wrapper" :class="{ 'feature-disabled': !localConfig.ENABLE_BETA_FEATURES }">
-          <div v-if="!localConfig.ENABLE_BETA_FEATURES" class="development-badge">
-            <i class="fas fa-code"></i>
-            In Development
-          </div>
           <label class="checkbox-label">
             <input
               v-model="localConfig.ENABLE_ADVANCED_ALGORITHM"
@@ -110,24 +51,6 @@
           </small>
         </div>
 
-      
-        <div class="form-group feature-wrapper" :class="{ 'feature-disabled': !localConfig.ENABLE_BETA_FEATURES }">
-          <div v-if="!localConfig.ENABLE_BETA_FEATURES" class="development-badge">
-            <i class="fas fa-code"></i>
-            In Development
-          </div>
-          <label class="checkbox-label">
-            <input
-              v-model="localConfig.ENABLE_SOCIAL_FEATURES"
-              type="checkbox"
-              :disabled="isLoading || !localConfig.ENABLE_BETA_FEATURES"
-            />
-            <span class="checkbox-text">Enable social features</span>
-          </label>
-          <small class="form-help">
-            Enable social features like sharing and collaborative filtering
-          </small>
-        </div>
       </div>
 
       <!-- AI Provider Configuration (visible only when advanced algorithm is enabled) -->
@@ -228,18 +151,34 @@
                   <div class="provider-card">
                     <div class="provider-name"><i class="fas fa-cloud"></i> OpenAI</div>
                     <table class="provider-table">
-                      <tr><td>API Key</td><td><code>sk-proj-...</code> (required)</td></tr>
-                      <tr><td>Base URL</td><td><em>leave blank</em></td></tr>
-                      <tr><td>Model</td><td><code>gpt-4o-mini</code></td></tr>
+                      <tbody>
+                        <tr><td>API Key</td><td><code>sk-proj-...</code> (required)</td></tr>
+                        <tr><td>Base URL</td><td><em>leave blank</em></td></tr>
+                        <tr><td>Model</td><td><code>gpt-4o-mini</code></td></tr>
+                      </tbody>
                     </table>
+                  </div>
+
+                  <div class="provider-card">
+                    <div class="provider-name"><i class="fas fa-gem"></i> Google Gemini</div>
+                    <table class="provider-table">
+                      <tbody>
+                        <tr><td>API Key</td><td><code>AIza...</code> (from Google AI Studio)</td></tr>
+                        <tr><td>Base URL</td><td><code>https://generativelanguage.googleapis.com/v1beta/openai/</code></td></tr>
+                        <tr><td>Model</td><td><code>gemini-2.0-flash</code>, <code>gemini-1.5-pro</code>, etc.</td></tr>
+                      </tbody>
+                    </table>
+                    <small class="provider-note">Get your free API key at <a href="https://aistudio.google.com/" target="_blank" rel="noopener">aistudio.google.com</a>. The Base URL must end with <code>/openai/</code>.</small>
                   </div>
 
                   <div class="provider-card provider-card--local">
                     <div class="provider-name"><i class="fas fa-server"></i> Ollama <span class="badge-local">Local</span></div>
                     <table class="provider-table">
-                      <tr><td>API Key</td><td><em>not required</em></td></tr>
-                      <tr><td>Base URL</td><td><code>http://localhost:11434/v1</code></td></tr>
-                      <tr><td>Model</td><td><code>mistral</code>, <code>llama3</code>, etc.</td></tr>
+                      <tbody>
+                        <tr><td>API Key</td><td><em>not required</em></td></tr>
+                        <tr><td>Base URL</td><td><code>http://localhost:11434/v1</code></td></tr>
+                        <tr><td>Model</td><td><code>mistral</code>, <code>llama3</code>, etc.</td></tr>
+                      </tbody>
                     </table>
                     <small class="provider-note">Make sure Ollama is running and the model is pulled before saving.</small>
                   </div>
@@ -247,18 +186,22 @@
                   <div class="provider-card">
                     <div class="provider-name"><i class="fas fa-network-wired"></i> OpenRouter</div>
                     <table class="provider-table">
-                      <tr><td>API Key</td><td><code>sk-or-v1-...</code> (required)</td></tr>
-                      <tr><td>Base URL</td><td><code>https://openrouter.ai/api/v1</code></td></tr>
-                      <tr><td>Model</td><td><code>meta-llama/llama-3-8b-instruct</code></td></tr>
+                      <tbody>
+                        <tr><td>API Key</td><td><code>sk-or-v1-...</code> (required)</td></tr>
+                        <tr><td>Base URL</td><td><code>https://openrouter.ai/api/v1</code></td></tr>
+                        <tr><td>Model</td><td><code>meta-llama/llama-3-8b-instruct</code></td></tr>
+                      </tbody>
                     </table>
                   </div>
 
                   <div class="provider-card">
                     <div class="provider-name"><i class="fas fa-exchange-alt"></i> LiteLLM Proxy</div>
                     <table class="provider-table">
-                      <tr><td>API Key</td><td>depends on your proxy config</td></tr>
-                      <tr><td>Base URL</td><td><code>http://&lt;your-proxy&gt;:4000</code></td></tr>
-                      <tr><td>Model</td><td>depends on your proxy config</td></tr>
+                      <tbody>
+                        <tr><td>API Key</td><td>depends on your proxy config</td></tr>
+                        <tr><td>Base URL</td><td><code>http://&lt;your-proxy&gt;:4000</code></td></tr>
+                        <tr><td>Model</td><td>depends on your proxy config</td></tr>
+                      </tbody>
                     </table>
                   </div>
                 </div>
@@ -320,15 +263,53 @@
         <div class="form-group">
           <label class="checkbox-label">
             <input
-              v-model="localConfig.ENABLE_VISUAL_EFFECTS"
+              :checked="!localConfig.ENABLE_VISUAL_EFFECTS"
+              @change="localConfig.ENABLE_VISUAL_EFFECTS = !$event.target.checked"
               type="checkbox"
               :disabled="isLoading"
             />
-            <span class="checkbox-text">Enable visual effects (blur)</span>
+            <span class="checkbox-text">Disable visual effects (blur)</span>
           </label>
           <small class="form-help">
-            Disable to improve UI performance and frame rates by turning off heavy CSS background blurs.
+            Check this box to improve UI performance and frame rates by turning off heavy CSS background blurs.
           </small>
+        </div>
+
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input
+              v-model="localConfig.ENABLE_STATIC_BACKGROUND"
+              type="checkbox"
+              :disabled="isLoading"
+            />
+            <span class="checkbox-text">Enable static colored background</span>
+          </label>
+          <small class="form-help">
+            Override the app's default rotating background pictures with a static color.
+          </small>
+        </div>
+
+        <div class="form-group" v-if="localConfig.ENABLE_STATIC_BACKGROUND">
+          <label for="staticBackgroundColor">Static Background Color (Hex)</label>
+          <div style="display: flex; gap: 10px; align-items: center; margin-top: 0.5rem;">
+            <input
+              id="staticBackgroundColor"
+              v-model="localConfig.STATIC_BACKGROUND_COLOR"
+              type="color"
+              class="form-control"
+              style="width: 50px; padding: 0.2rem; height: 38px; cursor: pointer;"
+              :disabled="isLoading"
+            />
+            <input
+              v-model="localConfig.STATIC_BACKGROUND_COLOR"
+              type="text"
+              placeholder="#2E3440"
+              class="form-control"
+              pattern="^#[0-9A-Fa-f]{6}$"
+              title="Must be a valid hex color code (e.g. #FF0000)"
+              :disabled="isLoading"
+            />
+          </div>
         </div>
       </div>
 
@@ -441,9 +422,27 @@
           <small class="form-help">
             Cache API responses to reduce external service load
           </small>
+       </div>
+      </div>
+
+      <div class="settings-group">
+        <h3>
+          <i class="fas fa-gear"></i>
+          Application
+        </h3>
+
+        <div class="form-group">
+          <label for="subpath">Subpath</label>
+          <input id="subpath" v-model="localConfig.SUBPATH" type="text" placeholder="/suggestarr" class="form-control"
+            :disabled="isLoading" />
+          <small class="form-help">
+            Subpath for running SuggestArr under a subdirectory (e.g., "/suggestarr"). Leave empty for root.
+          </small>
         </div>
       </div>
     </div>
+
+
 
     <!-- Save Button -->
     <div class="settings-actions">
@@ -516,8 +515,14 @@ export default {
         this.localConfig = { ...newConfig };
         this.originalConfig = { ...newConfig };
 
-        // Ensure arrays are properly initialized
-        if (!Array.isArray(this.localConfig.SELECTED_USERS)) {
+        // Ensure SELECTED_USERS is always a parsed array
+        if (typeof this.localConfig.SELECTED_USERS === 'string') {
+          try {
+            this.localConfig.SELECTED_USERS = JSON.parse(this.localConfig.SELECTED_USERS);
+          } catch {
+            this.localConfig.SELECTED_USERS = [];
+          }
+        } else if (!Array.isArray(this.localConfig.SELECTED_USERS)) {
           this.localConfig.SELECTED_USERS = [];
         }
 
@@ -538,6 +543,8 @@ export default {
           LLM_MODEL: 'gpt-4o-mini',
           ENABLE_SOCIAL_FEATURES: false,
           ENABLE_VISUAL_EFFECTS: true,
+          ENABLE_STATIC_BACKGROUND: false,
+          STATIC_BACKGROUND_COLOR: '#2E3440',
         };
 
         Object.keys(advancedDefaults).forEach(key => {
@@ -623,18 +630,18 @@ export default {
         }
 
         if (endpoint) {
-          let url = endpoint;
-          let params = {};
+          let response;
 
-          // Add required parameters for Plex
+          // Send Plex credentials in request body, not query params
           if (service === 'plex') {
-            params.PLEX_TOKEN = this.localConfig.PLEX_TOKEN;
-            if (this.localConfig.PLEX_API_URL) {
-              params.PLEX_API_URL = this.localConfig.PLEX_API_URL;
-            }
+            response = await axios.post(endpoint, {
+              PLEX_TOKEN: this.localConfig.PLEX_TOKEN,
+              PLEX_API_URL: this.localConfig.PLEX_API_URL || '',
+            });
+          } else {
+            response = await axios.get(endpoint);
           }
 
-          const response = await axios.get(url, { params });
           this.availableUsers = response.data.users || response.data || [];
         }
       } catch (error) {
@@ -682,6 +689,9 @@ export default {
             LLM_MODEL: this.localConfig.LLM_MODEL || 'gpt-4o-mini',
             ENABLE_SOCIAL_FEATURES: this.localConfig.ENABLE_SOCIAL_FEATURES || false,
             ENABLE_VISUAL_EFFECTS: this.localConfig.ENABLE_VISUAL_EFFECTS !== false,
+            ENABLE_STATIC_BACKGROUND: this.localConfig.ENABLE_STATIC_BACKGROUND || false,
+            STATIC_BACKGROUND_COLOR: this.localConfig.STATIC_BACKGROUND_COLOR || '#2E3440',
+            SUBPATH: this.localConfig.SUBPATH || null,
           },
         });
 
@@ -730,6 +740,9 @@ export default {
         LLM_MODEL: 'gpt-4o-mini',
         ENABLE_SOCIAL_FEATURES: false,
         ENABLE_VISUAL_EFFECTS: true,
+        ENABLE_STATIC_BACKGROUND: false,
+        STATIC_BACKGROUND_COLOR: '#2E3440',
+        SUBPATH: null,
       };
 
       if (confirm('Are you sure you want to reset all advanced settings to their defaults?')) {
@@ -744,6 +757,7 @@ export default {
 <style scoped>
 .settings-advanced {
   color: var(--color-text-primary);
+  padding: var(--spacing-lg);
 }
 
 .section-header {
@@ -1106,30 +1120,6 @@ export default {
 /* Feature wrapper for positioning */
 .feature-wrapper {
   position: relative;
-}
-
-/* Development badge */
-.development-badge {
-  position: absolute;
-  top: -8px;
-  right: 0;
-  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
-  color: white;
-  font-size: 0.75rem;
-  font-weight: 600;
-  padding: 0.25rem 0.75rem;
-  border-radius: 12px;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
-  box-shadow: 0 2px 8px rgba(245, 158, 11, 0.3);
-  text-transform: uppercase;
-  letter-spacing: 0.025em;
-  z-index: 1;
-}
-
-.development-badge i {
-  font-size: 0.625rem;
 }
 
 .btn-outline:hover:not(:disabled) {

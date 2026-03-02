@@ -54,20 +54,17 @@ def test_omdb_connection():
             except aiohttp.ClientTimeout:
                 return {'status': 'error', 'message': 'Connection to OMDb API timed out'}
             except aiohttp.ClientError as e:
+                logger.error("OMDb connection error: %s", e)
                 return {'status': 'error',
-                        'message': f'Failed to connect to OMDb API: {str(e)}'}
+                        'message': 'Failed to connect to OMDb API'}
 
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            result = loop.run_until_complete(_test())
-        finally:
-            loop.close()
+        from api_service.blueprints.jobs.routes import run_async
+        result = run_async(_test())
 
         status_code = 200 if result['status'] == 'success' else 400
         return jsonify(result), status_code
 
     except Exception as e:
-        logger.error("Error testing OMDb connection: %s", str(e))
+        logger.error("Error testing OMDb connection: %s", str(e), exc_info=True)
         return jsonify({'status': 'error',
-                        'message': f'Error testing OMDb connection: {str(e)}'}), 500
+                        'message': 'Error testing OMDb connection'}), 500

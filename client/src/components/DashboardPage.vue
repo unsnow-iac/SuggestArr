@@ -1,14 +1,21 @@
 <template>
-  <div class="settings-container">
+  <div class="settings-container" :class="{ 'static-bg-active': config.ENABLE_STATIC_BACKGROUND }">
     <div 
+      v-if="!config.ENABLE_STATIC_BACKGROUND"
       class="background-layer current-bg" 
       :style="{ backgroundImage: 'url(' + currentBackgroundUrl + ')' }"
       :class="{ 'fade-out': isTransitioning }"
     ></div>
     <div 
+      v-if="!config.ENABLE_STATIC_BACKGROUND"
       class="background-layer next-bg" 
       :style="{ backgroundImage: 'url(' + nextBackgroundUrl + ')' }"
       :class="{ 'fade-in': isTransitioning }"
+    ></div>
+    <div
+      v-if="config.ENABLE_STATIC_BACKGROUND"
+      class="background-layer static-bg"
+      :style="{ backgroundColor: config.STATIC_BACKGROUND_COLOR }"
     ></div>
     <div class="settings-content">
       <!-- Header -->
@@ -18,20 +25,33 @@
           <a href="https://github.com/giuseppe99barchetta/SuggestArr" target="_blank" rel="noopener noreferrer">
             <img src="@/assets/logo.png" alt="SuggestArr Logo" class="logo">
           </a>
+          <button
+            v-if="authSetupComplete"
+            @click="handleLogout"
+            class="logout-btn"
+            title="Log out"
+          >
+            <i class="fas fa-sign-out-alt"></i>
+            <span class="logout-label">Log out</span>
+          </button>
         </div>
       </div>
 
       <!-- Navigation Tabs -->
       <!-- Desktop Navigation -->
-      <div class="tabs-navigation desktop-nav">
+      <div class="tabs-navigation desktop-nav" data-tour-id="nav-tabs">
         <button
-          v-for="tab in tabs"
+          v-for="tab in visibleTabs"
           :key="tab.id"
+          :data-tour-id="tab.tourId || null"
           @click="activeTab = tab.id"
           :class="['tab-button', { active: activeTab === tab.id }]"
         >
           <i :class="tab.icon"></i>
           <span>{{ tab.name }}</span>
+          <span v-if="tab.isBeta" class="beta-badge">
+            BETA
+          </span>
           <!-- Badge per Requests -->
           <span v-if="tab.id === 'requests' && requestCount > 0" class="tab-badge">
             {{ requestCount }}
@@ -59,7 +79,7 @@
           <transition name="dropdown-slide">
             <div v-if="showMobileDropdown" class="mobile-dropdown">
               <button
-                v-for="tab in tabs"
+                v-for="tab in visibleTabs"
                 :key="tab.id"
                 @click="selectMobileTab(tab.id)"
                 :class="['mobile-dropdown-item', { active: activeTab === tab.id }]"
@@ -96,12 +116,19 @@
       <!-- Action Footer -->
       <div class="settings-footer">
         <div class="footer-info">
-          <button 
-                @click="showChangelog" 
+          <button
+                @click="showChangelog"
                 class="changelog-btn"
                 title="View changelog for current version"
               >
           <i class="fas fa-info-circle"></i>
+          </button>
+          <button
+            @click="restartTour"
+            class="changelog-btn"
+            title="Replay the onboarding tour"
+          >
+            <i class="fas fa-question-circle"></i>
           </button>
           <div class="version-info">
             <div class="version-text-container">
@@ -126,7 +153,7 @@
           </div>
         </div>
         
-        <div class="footer-actions">
+        <div class="footer-actions" data-tour-id="footer-actions">
           <button
             @click="exportConfig"
             class="btn btn-outline"
@@ -135,7 +162,7 @@
             <i class="fas fa-download"></i>
             <span>Export</span>
           </button>
-          
+
           <button
             @click="importConfig"
             class="btn btn-outline"
@@ -144,7 +171,7 @@
             <i class="fas fa-upload"></i>
             <span>Import</span>
           </button>
-          
+
           <button
             @click="resetConfig"
             class="btn btn-danger"
@@ -153,10 +180,11 @@
             <i class="fas fa-undo"></i>
             <span>Reset</span>
           </button>
-          
+
           <button
             @click="forceRunAutomation"
             class="btn btn-secondary"
+            data-tour-id="footer-force-run"
             :disabled="isForceRunning"
             title="Force run automation script now">
             <i :class="isForceRunning ? 'fas fa-spinner fa-spin' : 'fas fa-play'"></i>
@@ -270,41 +298,59 @@
 
       <Footer />
     </div>
+
+    <!-- Onboarding Tour -->
+    <OnboardingTour
+      :active="showTour"
+      :steps="tourSteps"
+      @done="showTour = false"
+    />
   </div>
 </template>
 
 <script>
 import axios from 'axios';
 import Footer from './AppFooter.vue';
+import OnboardingTour from './OnboardingTour.vue';
 import { useBackgroundImage } from '@/composables/useBackgroundImage';
 import { useVersionCheck } from '@/composables/useVersionCheck';
+import { useAuth } from '@/composables/useAuth';
 import '@/assets/styles/dashboardPage.css';
 
 // Import tab components
-import SettingsGeneral from './settings/SettingsGeneral.vue';
 import SettingsServices from './settings/SettingsServices.vue';
 import SettingsDatabase from './settings/SettingsDatabase.vue';
 import SettingsAdvanced from './settings/SettingsAdvanced.vue';
 import SettingsRequests from './settings/SettingsRequests.vue';
 import SettingsJobs from './settings/SettingsJobs.vue';
+import AiSearchPage from './settings/AiSearchPage.vue';
 import LogsComponent from './LogsComponent.vue';
+import UserManagement from './settings/UserManagement.vue';
+import UserProfile from './settings/UserProfile.vue';
+import { exportConfig, importConfig } from '@/api/api';
+
+const TOUR_STORAGE_KEY = 'suggestarr_tour_done';
 
 export default {
   name: 'SettingsPage',
   components: {
     Footer,
-    SettingsGeneral,
+    OnboardingTour,
     SettingsServices,
     SettingsDatabase,
     SettingsAdvanced,
     SettingsRequests,
     SettingsJobs,
+    AiSearchPage,
     LogsComponent,
+    UserManagement,
+    UserProfile,
   },
   setup() {
     const { currentBackgroundUrl, nextBackgroundUrl, isTransitioning, startDefaultImageRotation, startBackgroundImageRotation, stopBackgroundImageRotation } = useBackgroundImage();
     const { currentVersion, currentImageTag, currentBuildDate, updateAvailable, checkForUpdates } = useVersionCheck();
-    
+    const { authSetupComplete, currentUser, logout } = useAuth();
+
     return {
       currentBackgroundUrl,
       nextBackgroundUrl,
@@ -316,7 +362,10 @@ export default {
       currentImageTag,
       currentBuildDate,
       updateAvailable,
-      checkForUpdates
+      checkForUpdates,
+      authSetupComplete,
+      currentUser,
+      logout
     };
   },
     data() {
@@ -333,6 +382,7 @@ export default {
       changelogError: null,
       requestCount: 0,
       showMobileDropdown: false,
+      showTour: false,
       // Cache per migliorare performance
       testingConnections: {
         tmdb: false,
@@ -342,26 +392,100 @@ export default {
         database: false,
       },
       tabs: [
-        { id: 'requests', name: 'Requests', icon: 'fas fa-paper-plane' },
-        { id: 'general', name: 'General', icon: 'fas fa-cog' },
-        { id: 'services', name: 'Services', icon: 'fas fa-plug' },
-        { id: 'jobs', name: 'Jobs', icon: 'fas fa-briefcase' },
-        { id: 'database', name: 'Database', icon: 'fas fa-database' },
-        { id: 'advanced', name: 'Advanced', icon: 'fas fa-sliders-h' },
-        { id: 'logs', name: 'Logs', icon: 'fas fa-file-alt' },
+        { id: 'requests',  name: 'Requests',  icon: 'fas fa-paper-plane', tourId: 'tab-requests' },
+        { id: 'ai_search', name: 'AI Search', icon: 'fas fa-magic',       isBeta: true,           tourId: 'tab-ai-search' },
+        { id: 'services',  name: 'Services',  icon: 'fas fa-plug',         tourId: 'tab-services', adminOnly: true },
+        { id: 'jobs',      name: 'Jobs',       icon: 'fas fa-briefcase',   tourId: 'tab-jobs' },
+        { id: 'database',  name: 'Database',  icon: 'fas fa-database',     tourId: 'tab-database', adminOnly: true },
+        { id: 'advanced',  name: 'Advanced',  icon: 'fas fa-sliders-h',   tourId: 'tab-advanced' },
+        { id: 'users',     name: 'Users',      icon: 'fas fa-users',       adminOnly: true },
+        { id: 'profile',   name: 'Profile',    icon: 'fas fa-user-circle', nonAdminOnly: true },
+        { id: 'logs',      name: 'Logs',       icon: 'fas fa-file-alt',    tourId: 'tab-logs' },
+      ],
+      tourSteps: [
+        {
+          targetId: 'nav-tabs',
+          title: 'Welcome to SuggestArr!',
+          description: 'These tabs give you access to all features. Let\'s take a quick look at each one.',
+          position: 'bottom',
+        },
+        {
+          targetId: 'tab-requests',
+          title: 'Requests',
+          description: 'Every time SuggestArr runs, it submits content requests to Overseerr / Jellyseerr. You can track them all here — what was requested, when, and for which user.',
+          position: 'bottom',
+        },
+        {
+          targetId: 'tab-jobs',
+          title: 'Jobs',
+          description: 'Jobs control when and how SuggestArr runs. You can create multiple jobs with different schedules, filters, media types, and user selections.',
+          position: 'bottom',
+        },
+        {
+          targetId: 'tab-services',
+          title: 'Services',
+          description: 'Update your API keys and connection settings for TMDB, your media server (Jellyfin, Plex…), and Jellyseerr / Overseerr here.',
+          position: 'bottom',
+        },
+        {
+          targetId: 'tab-ai-search',
+          title: 'AI Search',
+          description: 'Describe what you\'re in the mood for in plain language — "a tense thriller set in space" — and SuggestArr uses an LLM to find and request matching titles for you.',
+          position: 'bottom',
+        },
+        {
+          targetId: 'tab-database',
+          title: 'Database',
+          description: 'By default SuggestArr uses SQLite (zero setup). Switch here to PostgreSQL, MySQL, or MariaDB if you need a shared or more scalable database.',
+          position: 'bottom',
+        },
+        {
+          targetId: 'tab-advanced',
+          title: 'Advanced',
+          description: 'Fine-tune behaviour: configure an LLM for AI-enhanced recommendations, adjust the recommendation algorithm, set a custom base path, and more.',
+          position: 'bottom',
+        },
+        {
+          targetId: 'tab-logs',
+          title: 'Logs',
+          description: 'View real-time application logs to debug issues, monitor job execution, or check why a specific request was skipped.',
+          position: 'bottom',
+        },
+        {
+          targetId: 'footer-force-run',
+          title: 'Force Run',
+          description: 'Trigger SuggestArr immediately without waiting for the next scheduled job — great for testing your setup right after configuration.',
+          position: 'top',
+        },
+        {
+          targetId: 'footer-actions',
+          title: 'Backup & Restore',
+          description: 'Export your full configuration to a JSON file and import it on another instance or after a reset. You can replay this tour anytime with the ? button.',
+          position: 'top',
+        },
       ],
     };
   },
   computed: {
+    visibleTabs() {
+      const isAdmin = this.currentUser?.role === 'admin';
+      return this.tabs.filter(tab => {
+        if (tab.adminOnly && !isAdmin) return false;
+        if (tab.nonAdminOnly && isAdmin) return false;
+        return true;
+      });
+    },
     activeTabComponent() {
       const componentMap = {
         requests: 'SettingsRequests',
-        general: 'SettingsGeneral',
         services: 'SettingsServices',
         jobs: 'SettingsJobs',
         database: 'SettingsDatabase',
         advanced: 'SettingsAdvanced',
         logs: 'LogsComponent',
+        ai_search: 'AiSearchPage',
+        users: 'UserManagement',
+        profile: 'UserProfile',
       };
       return componentMap[this.activeTab];
     },
@@ -373,6 +497,15 @@ export default {
     isTransitioning(newValue) {
       if (newValue) {
         // Handle background transition state if needed
+      }
+    },
+    'config.ENABLE_STATIC_BACKGROUND': {
+      handler(newValue) {
+        if (newValue) {
+          this.stopBackgroundImageRotation();
+        } else {
+          this.startBackgroundImageRotation();
+        }
       }
     },
     'config.ENABLE_VISUAL_EFFECTS': {
@@ -389,11 +522,18 @@ export default {
   async mounted() {
     try {
       await this.loadConfig();
-      
+
       this.loadRequestCount();
-      
-      if (this.config.TMDB_API_KEY) {
-        this.startBackgroundImageRotation(this.config.TMDB_API_KEY);
+
+      if (!this.config.ENABLE_STATIC_BACKGROUND) {
+        this.startBackgroundImageRotation();
+      }
+
+      // Auto-start tour on first visit or when ?tour=1 is in the URL
+      const tourDone = localStorage.getItem(TOUR_STORAGE_KEY);
+      const tourForced = window.location.search.includes('tour=1');
+      if (!tourDone || tourForced) {
+        setTimeout(() => { this.showTour = true; }, 900);
       }
     } catch (error) {
       console.error('Error during component mount:', error);
@@ -401,6 +541,14 @@ export default {
     }
   },
   methods: {
+    async handleLogout() {
+      await this.logout();
+      this.$router.push('/login');
+    },
+    restartTour() {
+      localStorage.removeItem(TOUR_STORAGE_KEY);
+      this.showTour = true;
+    },
     selectMobileTab(tabId) {
       this.activeTab = tabId;
       this.showMobileDropdown = false;
@@ -413,7 +561,7 @@ export default {
       const currentTab = this.tabs.find(tab => tab.id === this.activeTab);
       return currentTab ? currentTab.icon : 'fas fa-question';
     },
-    async loadConfig(force = false) {
+    async loadConfig() {
       this.loadingMessage = 'Loading configuration...';
       this.isLoading = true;
       try {
@@ -480,9 +628,16 @@ export default {
 
     parseMarkdown(markdown) {
       if (!markdown) return '';
-      
-      // Basic markdown to HTML conversion
-      return markdown
+
+      // Escape HTML entities first to prevent XSS
+      const escaped = markdown
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+
+      // Basic markdown to HTML conversion (on escaped input)
+      return escaped
         // Headers
         .replace(/^### (.*$)/gim, '<h4>$1</h4>')
         .replace(/^## (.*$)/gim, '<h3>$1</h3>')
@@ -491,7 +646,7 @@ export default {
         .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
         // Italic
         .replace(/\*(.+?)\*/g, '<em>$1</em>')
-        // Links
+        // Links (href is already entity-encoded from the escape step)
         .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
         // Line breaks
         .replace(/\n/g, '<br>')
@@ -503,9 +658,33 @@ export default {
     async saveSection({ section, data }) {
       this.loadingMessage = `Saving ${section} settings...`;
       this.isLoading = true;
+      const oldSubpath = (this.config.SUBPATH || '').replace(/\/$/, '');
       try {
         await axios.post(`/api/config/section/${section}`, data);
         Object.assign(this.config, data);
+
+        // After saving advanced settings, sync use_llm flag on all recommendation jobs
+        if (section === 'advanced' && 'ENABLE_ADVANCED_ALGORITHM' in data) {
+          axios.post('/api/jobs/sync-ai-setting').catch(() => {});
+        }
+
+        // If SUBPATH changed, redirect the browser to the new base URL so the
+        // router re-initialises with the correct history base.
+        if (section === 'advanced' && 'SUBPATH' in data) {
+          const newSubpath = (data.SUBPATH || '').replace(/\/$/, '');
+          if (newSubpath !== oldSubpath) {
+            this.$toast.open({
+              message: 'Settings saved! Redirecting to new base URL…',
+              type: 'success',
+              duration: 2000,
+              position: 'top-right'
+            });
+            setTimeout(() => {
+              window.location.href = (newSubpath || '') + '/';
+            }, 1500);
+            return;
+          }
+        }
 
         this.$toast.open({
           message: `Settings saved successfully!`,
@@ -665,26 +844,30 @@ export default {
     async exportConfig() {
       this.loadingMessage = 'Exporting configuration...';
       this.isLoading = true;
+    
       try {
-        const response = await axios.get('/api/config/fetch');
+        const response = await exportConfig();
         const configData = response.data;
-
-        const blob = new Blob([JSON.stringify(configData, null, 2)], {
-          type: 'application/json',
-        });
+      
+        const blob = new Blob(
+          [JSON.stringify(configData, null, 2)],
+          { type: 'application/json' }
+        );
+      
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = url;
         link.download = `suggestarr-config-${new Date().toISOString().split('T')[0]}.json`;
         link.click();
         URL.revokeObjectURL(url);
-
+      
         this.$toast.open({
           message: 'Configuration exported successfully!',
           type: 'success',
           duration: 3000,
           position: 'top-right'
         });
+      
       } catch (error) {
         this.$toast.open({
           message: 'Failed to export configuration',
@@ -692,6 +875,7 @@ export default {
           duration: 5000,
           position: 'top-right'
         });
+      
         console.error('Error exporting config:', error);
       } finally {
         this.isLoading = false;
@@ -708,26 +892,27 @@ export default {
 
       this.loadingMessage = 'Importing configuration...';
       this.isLoading = true;
-      
+
       try {
         const text = await file.text();
         const configData = JSON.parse(text);
 
-        await axios.post('/api/config/save', configData);
+        await importConfig(configData);
+
         await this.loadConfig();
 
         this.$toast.open({
           message: 'Configuration imported successfully!',
           type: 'success',
           duration: 3000,
-          position: 'top-right'
+          position: 'top-right',
         });
       } catch (error) {
         this.$toast.open({
-          message: 'Failed to import: Invalid file format',
+          message: 'Failed to import configuration',
           type: 'error',
           duration: 5000,
-          position: 'top-right'
+          position: 'top-right',
         });
         console.error('Error importing config:', error);
       } finally {
@@ -742,12 +927,13 @@ export default {
 
     async forceRunAutomation() {
       this.isForceRunning = true;
-      this.loadingMessage = 'Manually running fetch...';
+      this.loadingMessage = 'Manually running jobs...';
 
       try {
-        await axios.post('/api/automation/force_run');
+        const response = await axios.post('/api/jobs/run-all');
+        const count = response.data?.jobs_count ?? '';
         this.$toast.open({
-          message: 'Force run started in the background!',
+          message: count ? `Running ${count} job(s) in the background!` : 'Jobs started in the background!',
           type: 'success',
           duration: 3000,
           position: 'top-right'
@@ -760,6 +946,13 @@ export default {
             duration: 4000,
             position: 'top-right'
           });
+        } else if (error.response && error.response.status === 404) {
+          this.$toast.open({
+            message: 'No enabled jobs found. Create a job first.',
+            type: 'warning',
+            duration: 5000,
+            position: 'top-right'
+          });
         } else {
           this.$toast.open({
             message: 'Force run failed, see logs for details.',
@@ -767,7 +960,7 @@ export default {
             duration: 5000,
             position: 'top-right'
           });
-          console.error('Error force running automation:', error);
+          console.error('Error force running jobs:', error);
         }
       } finally {
         this.isForceRunning = false;

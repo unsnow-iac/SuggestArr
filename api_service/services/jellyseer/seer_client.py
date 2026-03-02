@@ -1,5 +1,6 @@
 import aiohttp
 import asyncio
+from typing import List, Set
 from api_service.config.logger_manager import LoggerManager
 from api_service.db.database_manager import DatabaseManager
 
@@ -29,13 +30,29 @@ class SeerClient:
         self.password = seer_password
         self.session_token = session_token
         self.is_logged_in = False
-        self._login_lock = asyncio.Lock()
+        self._login_lock = None
         self.number_of_seasons = number_of_seasons
         self.pending_requests = set()
         self.exclude_downloaded = exclude_downloaded
         self.exclude_requested = exclude_watched
         self.anime_profile_config = anime_profile_config or {}
+        self.session = None
         self.logger.debug("SeerClient initialized with API URL: %s", api_url)
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        if self.session is None or self.session.closed:
+            self.session = aiohttp.ClientSession()
+        return self.session
+
+    async def close(self):
+        if self.session and not self.session.closed:
+            await self.session.close()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.close()
         
     async def init(self):
         """
@@ -65,27 +82,48 @@ class SeerClient:
 
         for attempt in range(retries):
             self.logger.debug("Attempt %d for request to %s", attempt + 1, url)
-            async with aiohttp.ClientSession(headers=headers, cookies=cookies) as session:
-                try:
-                    async with session.request(method, url, json=data, timeout=REQUEST_TIMEOUT) as response:
-                        self.logger.debug("Received response with status %d for request to %s", response.status, url)
-                        if response.status in HTTP_OK:
-                            return await response.json()
-                        elif response.status in (403, 404) and attempt < retries - 1:
-                            self.logger.debug("Retrying login due to status %d", response.status)
+            
+            # Use shared session but override headers/cookies for this request
+            # since aiohttp allows passing request-level headers/cookies
+            session = await self._get_session()
+            try:
+                async with session.request(method, url, json=data, headers=headers, cookies=cookies, timeout=REQUEST_TIMEOUT) as response:
+                    self.logger.debug("Received response with status %d for request to %s", response.status, url)
+                    if response.status in HTTP_OK:
+                        return await response.json()
+                    elif response.status == 403:
+                        resp = await response.json()
+                        message = resp.get('message') or resp.get('error', '')
+                        self.logger.error(
+                            f"Request to {url} failed with status: {response.status}, {message}"
+                        )
+                        # Quota-exceeded errors won't be resolved by re-logging in; abort immediately
+                        if 'quota' in message.lower():
+                            return None
+                        # Otherwise treat as auth failure and retry with login
+                        if attempt < retries - 1:
+                            self.logger.debug("Retrying login due to 403")
                             await self.login()
                         else:
-                            resp = await response.json()
-                            self.logger.error(
-                                f"Request to {url} failed with status: {response.status}, {resp['message'] if 'message' in resp else resp['error']}"
-                            )
-                except aiohttp.ClientError as e:
-                    self.logger.error(f"Client error during request to {url}: {e}")
-                await asyncio.sleep(delay)
+                            return None
+                    elif response.status == 404 and attempt < retries - 1:
+                        self.logger.debug("Retrying login due to status 404")
+                        await self.login()
+                    else:
+                        resp = await response.json()
+                        self.logger.error(
+                            f"Request to {url} failed with status: {response.status}, {resp.get('message') or resp.get('error', 'Unknown error')}"
+                        )
+            except aiohttp.ClientError as e:
+                self.logger.error(f"Client error during request to {url}: {e}")
+            await asyncio.sleep(delay)
         return None
 
     async def login(self):
         """Authenticate with Jellyseer and obtain a session token."""
+        if self._login_lock is None:
+            self._login_lock = asyncio.Lock()
+
         async with self._login_lock:
             if self.is_logged_in:
                 self.logger.debug("Already logged in.")
@@ -93,19 +131,18 @@ class SeerClient:
 
         login_url = f"{self.api_url}/api/v1/auth/local"
         self.logger.debug("Logging in to %s", login_url)
-        async with aiohttp.ClientSession() as session:
-            try:
-                login_data = {"email": self.username, "password": self.password}
-                async with session.post(login_url, json=login_data, timeout=REQUEST_TIMEOUT) as response:
-                    self.logger.debug("Login response status: %d", response.status)
-                    if response.status == 200 and 'connect.sid' in response.cookies:
-                        self.session_token = response.cookies['connect.sid'].value
-                        self.is_logged_in = True
-                        self.logger.info("Successfully logged in as %s", self.username)
-                    else:
-                        self.logger.error("Login failed: %d", response.status)
-            except asyncio.TimeoutError:
-                self.logger.error("Login request to %s timed out.", login_url)
+        session = await self._get_session()
+        try:
+            async with session.post(login_url, json={"email": self.username, "password": self.password}, timeout=REQUEST_TIMEOUT) as response:
+                self.logger.debug("Login response status: %d", response.status)
+                if response.status == 200 and 'connect.sid' in response.cookies:
+                    self.session_token = response.cookies['connect.sid'].value
+                    self.is_logged_in = True
+                    self.logger.info("Successfully logged in as %s", self.username)
+                else:
+                    self.logger.error("Login failed: %d", response.status)
+        except asyncio.TimeoutError:
+            self.logger.error("Login request to %s timed out.", login_url)
 
     async def get_all_users(self, max_users=100):
         """Fetch all users from Jellyseer API, returning a list of user IDs, names, and local status."""
@@ -177,54 +214,112 @@ class SeerClient:
         self.logger.info("Applied profile '%s': serverId=%s, profileId=%s, rootFolder=%s",
                         profile_key, profile.get('serverId'), profile.get('profileId'), profile.get('rootFolder'))
 
-    async def request_media(self, media_type, media, source=None, tvdb_id=None, user=None, is_anime=False, rationale=None):
-        """Request media and save it to the database if successful.
-        :param is_anime: If True, use anime-specific Overseerr profile routing.
+    def _build_seer_payload(self, media_type, media, source=None, user=None,
+                            is_anime=False, rationale=None):
+        """Build the Seer request payload dict.
+
+        Private meta-keys (prefixed with ``_``) are stripped before the payload is
+        sent to Seer but are preserved in the queue row so the worker can call
+        ``save_request`` correctly after a successful submission.
+        Metadata objects are intentionally excluded — they are persisted via
+        ``save_metadata`` at enqueue time so the payload stays small.
+
+        :return: payload dict ready for JSON serialisation.
         """
-
-        # Avoid duplicate requests
-        if (media_type, media['id']) in self.pending_requests:
-            self.logger.debug("Skipping duplicate request for %s (ID: %s)", media_type, media['id'])
-            return False
-
-        self.pending_requests.add((media_type, media['id']))
-        self.logger.debug("Requesting media: %s, media_type: %s, is_anime: %s", media, media_type, is_anime)
         data = {"mediaType": media_type, "mediaId": media['id']}
 
         if media_type == 'tv':
-            data["tvdbId"] = media['id']
-            data["seasons"] = "all" if self.number_of_seasons == "all" else list(range(1, int(self.number_of_seasons) + 1))
+            data["seasons"] = (
+                "all" if self.number_of_seasons == "all"
+                else list(range(1, int(self.number_of_seasons) + 1))
+            )
 
-        # Apply anime or default profile routing
         if self.anime_profile_config:
-            if is_anime:
-                profile_key = f"anime_{media_type}"
-                self._apply_profile_config(data, profile_key, media_type)
-            else:
-                profile_key = f"default_{media_type}"
-                self._apply_profile_config(data, profile_key, media_type)
+            profile_key = f"anime_{media_type}" if is_anime else f"default_{media_type}"
+            self._apply_profile_config(data, profile_key, media_type)
 
-        response = await self._make_request("POST", "api/v1/request", data=data, use_cookie=bool(self.session_token))
-        if response and 'error' not in response:
-            self.logger.debug("Media request successful: %s", response)
-            databaseManager = DatabaseManager()
-            # Safely get the user ID if the user object exists
-            user_id = None
-            if user:
-                databaseManager.save_user(user)
-                user_id = user.get('id')
-            # Safely get the source ID if the source object exists
-            source_id = source.get('id') if source else None
-            # Save the request utilizing the safely extracted variables
-            databaseManager.save_request(media_type, media.get('id'), source_id, user_id, rationale=rationale)
-            if source and source.get('id'):
-                databaseManager.save_metadata(source, media_type)
-            if media:
-                databaseManager.save_metadata(media, media_type)
-            return True
-        else:
-            self.logger.error("Media request failed: %s", response)
+        # Private meta-keys — consumed by the worker, not sent to Seer
+        data["_source_id"] = source.get('id') if source else None
+        data["_user_id"] = user.get('id') if user else None
+        data["_rationale"] = rationale
+        data["_is_anime"] = is_anime
+
+        return data
+
+    async def request_media(self, media_type, media, source=None, tvdb_id=None, user=None, is_anime=False, rationale=None):
+        """Enqueue a Seer submission for reliable background delivery.
+
+        Replaces the old direct-submit behaviour. All pre-checks (already requested /
+        downloaded / streaming-excluded) are still performed by the caller (handler
+        layer) before this method is invoked.
+
+        :return: True if the item was newly enqueued, False if skipped (duplicate or
+            already submitted).
+        """
+        tmdb_id = str(media['id'])
+
+        # Fast intra-process guard (asyncio is single-threaded: check+add are atomic)
+        if (media_type, tmdb_id) in self.pending_requests:
+            self.logger.debug("Skipping duplicate request for %s (ID: %s)", media_type, tmdb_id)
             return False
+
+        db = DatabaseManager()
+
+        # Double-check DB to close the TOCTOU gap between the handler's
+        # check_already_requested() call and this point.
+        if self.exclude_requested and db.check_request_exists(media_type, tmdb_id):
+            self.logger.debug(
+                "Skipping %s (ID: %s): already in DB (concurrent submission).", media_type, tmdb_id
+            )
+            return False
+
+        # Mark in-memory to short-circuit further calls within this run
+        self.pending_requests.add((media_type, tmdb_id))
+
+        payload = self._build_seer_payload(media_type, media, source=source, user=user,
+                                           is_anime=is_anime, rationale=rationale)
+        user_id = user.get('id') if user else None
+
+        if user:
+            db.save_user(user)
+
+        # Persist metadata immediately while the full objects are available in memory,
+        # so the payload stored in the queue table stays compact (no large text blobs).
+        try:
+            db.save_metadata(media, media_type)
+        except Exception:
+            pass  # non-critical — metadata is display-only cache
+        if source:
+            try:
+                db.save_metadata(source, media_type)
+            except Exception:
+                pass
+
+        enqueued = db.enqueue_request(tmdb_id, media_type, user_id, payload)
+        if enqueued:
+            self.logger.info("Enqueued %s tmdb:%s for Seer delivery.", media_type, tmdb_id)
+        return enqueued
+
+    async def submit_queued_request(self, payload: dict) -> bool:
+        """Perform the actual HTTP submission to Seer for a single queue row.
+
+        Called by the queue worker.  Strips private meta-keys before sending.
+
+        :param payload: The JSON-decoded payload stored in pending_requests.
+        :return: True on HTTP success, False on any failure.
+        """
+        # Build clean Seer body (drop private meta-keys)
+        data = {k: v for k, v in payload.items() if not k.startswith('_')}
+
+        response = await self._make_request(
+            "POST", "api/v1/request", data=data, use_cookie=bool(self.session_token)
+        )
+        if response and 'error' not in response:
+            self.logger.debug("Seer submission successful: %s", response)
+            return True
+
+        self.logger.error("Seer submission failed: %s", response)
+        return False
             
     async def check_already_requested(self, tmdb_id, media_type):
         """Check if a media request is cached in the current cycle."""
@@ -246,6 +341,17 @@ class SeerClient:
         
         return False
 
+    async def check_requests_exist_batch(self, media_type: str, tmdb_ids: List[str]) -> Set[str]:
+        """Check which of the provided TMDB IDs already have requests in the database."""
+        if not self.exclude_requested or not tmdb_ids:
+            return set()
+        
+        try:
+            return DatabaseManager().check_requests_exist_batch(media_type, tmdb_ids)
+        except Exception as e:
+            self.logger.error("Error in bulk check requests: %s", e)
+            return set()
+
     async def check_already_downloaded(self, tmdb_id, media_type, local_content=None):
         """Check if a media item has already been downloaded based on local content."""
         if self.exclude_downloaded:
@@ -255,19 +361,21 @@ class SeerClient:
                 self.logger.warning("local_content is None, skipping downloaded check")
                 return False
 
+            # Optimization: If local_content is a list, we should ideally have a set for O(1) lookup.
+            # However, since this is called per item, we'll check if we can optimize the caller side later.
+            # For now, let's at least make sure we don't do redundant work here.
             items = local_content.get(media_type, [])
+            if isinstance(items, set):
+                return str(tmdb_id) in items
+            
             if not isinstance(items, list):
-                self.logger.warning("Expected list for media_type '%s', but got %s", media_type, type(items))
+                self.logger.warning("Expected list or set for media_type '%s', but got %s", media_type, type(items))
                 return False
 
             for item in items:
-                if not isinstance(item, dict):
-                    self.logger.warning("Skipping invalid item in local_content: %s", item)
-                    continue
-                if 'tmdb_id' not in item:
-                    self.logger.warning("Skipping item without 'tmdb_id': %s", item)
-                    continue
-                if item['tmdb_id'] == str(tmdb_id):
+                if isinstance(item, dict) and item.get('tmdb_id') == str(tmdb_id):
+                    return True
+                if isinstance(item, str) and item == str(tmdb_id):
                     return True
         else:
             self.logger.info("Skipping check for already downloaded media.")

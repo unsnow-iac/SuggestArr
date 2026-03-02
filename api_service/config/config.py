@@ -3,7 +3,6 @@ import yaml
 import json
 from croniter import croniter
 from api_service.config.logger_manager import LoggerManager
-from api_service.config.cron_jobs import start_cron_job
 
 logger = LoggerManager.get_logger("Config")
 
@@ -103,6 +102,9 @@ def get_default_values():
         'FILTER_STREAMING_SERVICES': lambda: [],
         'FILTER_REGION_PROVIDER': lambda: None,
         'FILTER_MIN_RUNTIME': lambda: None,
+        # Include pay-per-view availability (rent/buy) in streaming checks
+        # Default: false (only subscription-based flatrate providers are considered)
+        'FILTER_INCLUDE_TVOD': lambda: False,
         'SUBPATH': lambda: None,
         'DB_TYPE': lambda: 'sqlite',
         'DB_HOST': lambda: None,
@@ -120,6 +122,8 @@ def get_default_values():
         'ENABLE_DEBUG_MODE': lambda: False,
         'ENABLE_PERFORMANCE_MONITORING': lambda: False,
         'ENABLE_VISUAL_EFFECTS': lambda: True,
+        'ENABLE_STATIC_BACKGROUND': lambda: False,
+        'STATIC_BACKGROUND_COLOR': lambda: '#2E3440',
         'OMDB_API_KEY': lambda: '',
         'FILTER_RATING_SOURCE': lambda: 'tmdb',
         'FILTER_IMDB_THRESHOLD': lambda: None,
@@ -142,6 +146,7 @@ def get_default_values():
         'DB_RETRY_DELAY': lambda: '1.0',
         'SEER_ANIME_PROFILE_CONFIG': lambda: {},
         'SEER_REQUEST_DELAY': lambda: 2,
+        'ALLOW_REGISTRATION': lambda: False,
     }
 
 def get_config_values():
@@ -186,12 +191,6 @@ def save_env_vars(config_data):
             yaml.safe_dump(env_vars, f)
             logger.debug(f"Environment variables saved: {env_vars}")
 
-        # Reload environment variables after saving
-        load_env_vars()
-        
-        # Update the cron job
-        start_cron_job(env_vars)
-        
     except Exception as e:
         logger.error(f"Error saving environment variables: {e}")
         raise
@@ -226,8 +225,6 @@ def get_config_sections():
     Returns a dictionary of configuration sections and their associated keys.
     """
     return {
-        'general': ['MAX_SIMILAR_MOVIE', 'MAX_SIMILAR_TV', 'CRON_TIMES', 'MAX_CONTENT_CHECKS',
-                   'SEARCH_SIZE', 'SUBPATH', 'LOG_LEVEL'],
         'services': ['TMDB_API_KEY', 'OMDB_API_KEY', 'SELECTED_SERVICE', 'PLEX_TOKEN', 'PLEX_API_URL',
                     'PLEX_LIBRARIES', 'JELLYFIN_API_URL', 'JELLYFIN_TOKEN', 'JELLYFIN_LIBRARIES',
                     'SEER_API_URL', 'SEER_TOKEN', 'SEER_USER_NAME', 'SEER_USER_PSW',
@@ -241,13 +238,14 @@ def get_config_sections():
                            'HONOR_JELLYSEER_DISCOVERY', 'FILTER_RELEASE_YEAR', 'FILTER_INCLUDE_NO_RATING',
                            'FILTER_LANGUAGE', 'FILTER_NUM_SEASONS', 'FILTER_STREAMING_SERVICES',
                            'FILTER_REGION_PROVIDER', 'EXCLUDE_DOWNLOADED', 'EXCLUDE_REQUESTED',
-                           'FILTER_MIN_RUNTIME'],
+                           'FILTER_MIN_RUNTIME', 'FILTER_INCLUDE_TVOD'],
         'advanced': ['SELECTED_USERS', 'LOG_LEVEL', 'ENABLE_BETA_FEATURES',
                      'ENABLE_ADVANCED_ALGORITHM', 'ENABLE_SOCIAL_FEATURES',
                      'ENABLE_DEBUG_MODE', 'ENABLE_PERFORMANCE_MONITORING', 'ENABLE_VISUAL_EFFECTS',
+                     'ENABLE_STATIC_BACKGROUND', 'STATIC_BACKGROUND_COLOR',
                      'CACHE_TTL', 'MAX_CACHE_SIZE', 'API_TIMEOUT', 'API_RETRIES',
                      'ENABLE_API_CACHING', 'OPENAI_API_KEY', 'OPENAI_BASE_URL',
-                     'LLM_MODEL']
+                     'LLM_MODEL', 'SUBPATH', 'ALLOW_REGISTRATION']
     }
 
 def get_config_section(section_name):
@@ -291,7 +289,7 @@ def save_config_section(section_name, section_data):
             current_config[key] = section_data[key]
 
     # Special handling for setup completion
-    if section_name in ['general', 'services', 'database']:
+    if section_name in ['services', 'database']:
         # Check if essential setup is completed
         if is_setup_complete(current_config):
             current_config['SETUP_COMPLETED'] = True
@@ -324,13 +322,11 @@ def is_setup_complete(config_data=None):
         essential_checks.extend([
             config_data.get('PLEX_TOKEN'),
             config_data.get('PLEX_API_URL'),
-            config_data.get('PLEX_LIBRARIES')
         ])
-    elif service == 'jellyfin':
+    elif service in ('jellyfin', 'emby'):
         essential_checks.extend([
             config_data.get('JELLYFIN_API_URL'),
             config_data.get('JELLYFIN_TOKEN'),
-            config_data.get('JELLYFIN_LIBRARIES')
         ])
 
     # Database check (always required)
